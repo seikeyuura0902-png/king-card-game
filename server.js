@@ -4,6 +4,7 @@ const { Server } = require('socket.io');
 const path = require('path');
 
 const app = express();
+app.use(express.static(__dirname + '/public'));
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: '*' },
@@ -537,6 +538,8 @@ function checkWinner(room) {
 }
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`キングカードゲームサーバー起動: http://localhost:${PORT}`);
+// Renderで動かすための修正
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(サーバーがポート ${PORT} で起動しました);
 });
