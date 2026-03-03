@@ -34,16 +34,14 @@ app.get('/', (req, res) => {
 // ルーム管理
 const rooms = {};
 ...
-// --- 重要: 静的ファイルの設定 ---
-// public フォルダを静的ファイルのルートとして指定
-app.use(express.static(path.join(__dirname, 'public')));
+// --- 修正版：ファイルを直接読み込む設定 ---
+// index.html が server.js と同じ場所にあるため、public は使いません
+app.use(express.static(__dirname));
 
-// サイトのトップ (/) にアクセスしたときに index.html を返す
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
-// ------------------------------
-
+// ------------------------------------
 // ルーム管理
 const rooms = {};
 const waitingPlayers = [];
