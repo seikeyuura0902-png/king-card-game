@@ -13,7 +13,6 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 const rooms = {};
 const waitingPlayers = [];
 
-// バトル判定ロジック
 function resolveBattle(c1, c2) {
   if (c1 === c2) return 'draw';
   const SPECIAL = ['emperor','first_emperor','sniper','revolutionary'];
@@ -72,14 +71,15 @@ io.on('connection', (socket) => {
     const p2 = gs.players.p2;
     const me = gs.players[playerId];
 
-    if (me.lastCard === cardId || me.ready) return;
+    // 禁止カードチェック
+    const isBanned = me.bannedCards.some(b => b.card === cardId);
+    if (isBanned || me.lastCard === cardId || me.ready) return;
 
     me.selectedCard = cardId;
     me.ready = true;
     io.to(room.sockets[playerId === 'p1' ? 'p2' : 'p1']).emit('opponentReady');
 
     if (p1.ready && p2.ready) {
-      // ターン進行に伴う状態更新
       [p1, p2].forEach(p => {
         if (p.bannedCards) {
           p.bannedCards = p.bannedCards.map(b => ({ ...b, turnsLeft: b.turnsLeft - 1 })).filter(b => b.turnsLeft > 0);
@@ -92,17 +92,8 @@ io.on('connection', (socket) => {
       });
 
       let res = resolveBattle(p1.selectedCard, p2.selectedCard);
-      
-      // 万里の長城の判定
-      if (res === 'p2' && p1.greatWallActive) {
-        res = 'draw';
-        gs.log = [`${p1.name}の万里の長城が敗北を防いだ！`];
-      } else if (res === 'p1' && p2.greatWallActive) {
-        res = 'draw';
-        gs.log = [`${p2.name}の万里の長城が敗北を防いだ！`];
-      } else {
-        gs.log = [`ターン${gs.turn + 1}: P1「${p1.selectedCard}」 vs P2「${p2.selectedCard}」`];
-      }
+      if (res === 'p2' && p1.greatWallActive) res = 'draw';
+      else if (res === 'p1' && p2.greatWallActive) res = 'draw';
 
       let winnerId = null;
       if (res === 'p1') {
@@ -110,30 +101,23 @@ io.on('connection', (socket) => {
         p2.dead.push(p2.selectedCard);
         p1.killCount++;
         winnerId = 'p1';
-        gs.log.push("P1の勝利！");
       } else if (res === 'p2') {
         p1.hand = p1.hand.filter(c => c !== p1.selectedCard);
         p1.dead.push(p1.selectedCard);
         p2.killCount++;
         winnerId = 'p2';
-        gs.log.push("P2の勝利！");
       } else if (res === 'mutual') {
         p1.hand = p1.hand.filter(c => c !== p1.selectedCard);
         p2.hand = p2.hand.filter(c => c !== p2.selectedCard);
         p1.dead.push(p1.selectedCard);
         p2.dead.push(p2.selectedCard);
-        gs.log.push("相打ち！");
-      } else {
-        gs.log.push("引き分け！");
       }
 
-      // 終了・能力判定
       if (p1.killCount >= 6 || p2.killCount >= 6) {
         gs.phase = 'gameover';
       } else {
         const winCard = winnerId ? gs.players[winnerId].selectedCard : null;
-        const SPECIALS = ['emperor', 'first_emperor', 'sniper', 'revolutionary'];
-        if (winnerId && SPECIALS.includes(winCard)) {
+        if (winnerId && ['emperor', 'first_emperor', 'sniper', 'revolutionary'].includes(winCard)) {
           gs.phase = 'ability';
           gs.pendingAbility = [{ playerId: winnerId, cardId: winCard }];
         }
@@ -165,32 +149,26 @@ io.on('connection', (socket) => {
 
     if (abilityData.cardId === 'emperor') {
       if (abilityData.type === 'A') {
-        opp.bannedCards = opp.bannedCards || [];
         opp.bannedCards.push({ card: abilityData.target, turnsLeft: 3 });
+        gs.log.push(`${opp.name}の「${abilityData.target}」を3ターン禁止した！`);
       } else {
         opp.forcedNextTurn = true;
+        gs.log.push(`${opp.name}は次ターン、兵士か奴隷しか出せない！`);
+      }
+    } else if (abilityData.cardId === 'sniper') {
+      if (opp.hand.includes(abilityData.target)) {
+        opp.hand = opp.hand.filter(c => c !== abilityData.target);
+        opp.assassinated.push(abilityData.target);
+        gs.log.push(`${opp.name}の「${abilityData.target}」を暗殺した！`);
       }
     } else if (abilityData.cardId === 'first_emperor') {
       me.greatWallActive = true;
       me.greatWallTurns = 3;
-      gs.log.push(`${me.name}が万里の長城を築いた！`);
-    } else if (abilityData.cardId === 'sniper') {
-      if (opp.hand.includes(abilityData.target)) {
-        opp.hand = opp.hand.filter(c => c !== abilityData.target);
-        opp.assassinated = opp.assassinated || [];
-        opp.assassinated.push(abilityData.target);
-        gs.log.push(`${opp.name}の「${abilityData.target}」を暗殺した！`);
-      }
     } else if (abilityData.cardId === 'revolutionary') {
       (abilityData.targets || []).forEach(t => {
         let idx = me.dead.indexOf(t);
-        if (idx !== -1) {
-          me.dead.splice(idx, 1);
-          opp.killCount = Math.max(0, opp.killCount - 1);
-        } else {
-          idx = (me.assassinated || []).indexOf(t);
-          if (idx !== -1) me.assassinated.splice(idx, 1);
-        }
+        if (idx !== -1) { me.dead.splice(idx, 1); opp.killCount = Math.max(0, opp.killCount - 1); }
+        else { idx = me.assassinated.indexOf(t); if (idx !== -1) me.assassinated.splice(idx, 1); }
         me.hand.push(t);
       });
     }
@@ -206,8 +184,7 @@ io.on('connection', (socket) => {
   socket.on('skipAbility', (data) => {
     const room = rooms[data.roomId]; if (!room) return;
     const gs = room.gameState;
-    gs.phase = 'select';
-    gs.pendingAbility = [];
+    gs.phase = 'select'; gs.pendingAbility = [];
     gs.players.p1.ready = false; gs.players.p2.ready = false;
     gs.players.p1.selectedCard = null; gs.players.p2.selectedCard = null;
     gs.turn++;
@@ -224,13 +201,14 @@ function broadcastGameState(room) {
       myId: myId, turn: gs.turn, phase: gs.phase,
       me: { ...my },
       opponent: { 
-        name: op.name, handCount: (op.hand || []).length, dead: op.dead || [], 
-        assassinated: op.assassinated || [], revived: op.revived || [], 
-        ready: op.ready, killCount: op.killCount || 0, 
+        name: op.name, 
+        hand: op.hand, // ★ここが重要：相手の手札リストをそのまま送り、game.jsで選択できるようにする
+        handCount: op.hand.length, 
+        dead: op.dead, assassinated: op.assassinated, 
+        ready: op.ready, killCount: op.killCount, 
         specialUnlocked: op.specialUnlocked, greatWallActive: op.greatWallActive 
       },
-      log: gs.log || [],
-      pendingAbility: gs.pendingAbility || []
+      log: gs.log, pendingAbility: gs.pendingAbility
     };
   };
   io.to(room.sockets.p1).emit('gameState', send('p1', 'p2'));
