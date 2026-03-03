@@ -13,9 +13,10 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 const rooms = {};
 const waitingPlayers = [];
 
-// ---------------------------------------------------------
-// 1. 内部判定用キーワード（すべて小文字で定義）
-// ---------------------------------------------------------
+/**
+ * 判定用キーワード
+ * どんなファイル名が来ても、これらが含まれていれば特殊カードと判定します
+ */
 const KEYS = {
   EMP: 'emperor',
   FIRST: 'first_emperor',
@@ -24,30 +25,27 @@ const KEYS = {
   SLAVE: 'slave'
 };
 
-// ---------------------------------------------------------
-// 2. バトル判定ロジック
-// ---------------------------------------------------------
+// 比較・判定用の正規化関数（大文字を小文字にし、拡張子を取る）
+function normalize(name) {
+  if (!name) return "";
+  return String(name).toLowerCase().replace('.png', '').trim();
+}
+
 function resolveBattle(c1_orig, c2_orig) {
-  // 比較の時だけ小文字にする（元の c1_orig は壊さない）
-  const s1 = String(c1_orig).toLowerCase();
-  const s2 = String(c2_orig).toLowerCase();
+  const s1 = normalize(c1_orig);
+  const s2 = normalize(c2_orig);
 
   if (s1 === s2) return 'draw';
 
   const isSpec = (s) => [KEYS.EMP, KEYS.FIRST, KEYS.SNIP, KEYS.REVO].some(k => s.includes(k));
 
-  // 奴隷の逆転
   if (s1.includes(KEYS.SLAVE) && isSpec(s2)) return 'p1';
   if (s2.includes(KEYS.SLAVE) && isSpec(s1)) return 'p2';
   
-  // 特殊カード同士は引き分け
   if (isSpec(s1) && isSpec(s2)) return 'draw';
-
-  // 特殊カード vs 通常カード
   if (isSpec(s1)) return 'p1';
   if (isSpec(s2)) return 'p2';
 
-  // 通常カードの強さ比較
   const getScore = (s) => {
     if (s.includes('noble')) return 4;
     if (s.includes('general')) return 3;
@@ -69,11 +67,11 @@ io.on('connection', (socket) => {
       const opp = waitingPlayers.shift();
       const roomId = `room_${Date.now()}`;
       
-      // 【重要】ここの名前を、あなたの画像ファイル名（Emperor.png等）に合わせてください。
-      // もし画像が「emperor.png」なら小文字に、「Emperor.png」なら大文字に。
       const createP = (n) => ({
         name: n,
-        hand: ['Noble', 'General', 'Soldier', 'Citizen', 'Slave', 'Emperor', 'First_Emperor', 'Sniper', 'Revolutionary'],
+        // 初期手札。もし画像が「Emperor.png」ならここを「Emperor.png」に書き換えてください。
+        // 現在は最も汎用的な「小文字・拡張子なし」にしています。
+        hand: ['noble', 'general', 'soldier', 'citizen', 'slave', 'emperor', 'first_emperor', 'sniper', 'revolutionary'],
         dead: [], assassinated: [], usedSpecial: [], killCount: 0, ready: false, selectedCard: null, greatWallActive: false
       });
       
@@ -101,8 +99,8 @@ io.on('connection', (socket) => {
     
     if (me.ready) return;
 
-    // クライアントから送られた名前を「そのまま」保存する
-    // これが画像表示（src="cardId + .png"など）に直結します
+    // クライアントから送られたカード名を「そのまま」保持
+    // これで画像パス(src="emperor.png"等)が壊れるのを防ぎます
     me.selectedCard = data.cardId; 
     me.ready = true;
 
@@ -112,7 +110,6 @@ io.on('connection', (socket) => {
     if (p1.ready && p2.ready) {
       let res = resolveBattle(p1.selectedCard, p2.selectedCard);
       
-      // バリア（万里の長城）判定
       if (res === 'p2' && p1.greatWallActive) res = 'draw';
       if (res === 'p1' && p2.greatWallActive) res = 'draw';
 
@@ -127,22 +124,15 @@ io.on('connection', (socket) => {
         p1.dead.push(p1.selectedCard); 
         p2.killCount++; 
         winId = 'p2'; 
-      } else if (res === 'mutual') {
-        p1.hand = p1.hand.filter(c => c !== p1.selectedCard); p1.dead.push(p1.selectedCard);
-        p2.hand = p2.hand.filter(c => c !== p2.selectedCard); p2.dead.push(p2.selectedCard);
       }
 
-      // -----------------------------------------------------
-      // 能力発動チェック（勝った時のみ）
-      // -----------------------------------------------------
+      // --- 能力発動チェック ---
       if (winId) {
         const winner = gs.players[winId];
-        const sName = String(winner.selectedCard).toLowerCase();
-        const key = [KEYS.EMP, KEYS.FIRST, KEYS.SNIP, KEYS.REVO].find(k => sName.includes(k));
+        const normalizedName = normalize(winner.selectedCard);
+        const key = [KEYS.EMP, KEYS.FIRST, KEYS.SNIP, KEYS.REVO].find(k => normalizedName.includes(k));
 
-        // その特殊カードがまだ未使用であれば
         if (key && !winner.usedSpecial.includes(key)) {
-          // 自分の現在の墓地数（負けたカード + 暗殺されたカード）
           const totalDead = (winner.dead ? winner.dead.length : 0) + (winner.assassinated ? winner.assassinated.length : 0);
           
           let canTrigger = false;
@@ -150,24 +140,20 @@ io.on('connection', (socket) => {
             // 革命家は墓地が3枚以上の時に勝利すれば発動
             if (totalDead >= 3) canTrigger = true;
           } else {
-            // 他の特殊カードは墓地が2枚以上の時に勝利すれば発動
+            // 他は墓地が2枚以上の時に勝利すれば発動
             if (totalDead >= 2) canTrigger = true;
           }
 
           if (canTrigger) {
             gs.phase = 'ability';
             gs.pendingAbility = [{ playerId: winId, cardId: winner.selectedCard }];
-            winner.usedSpecial.push(key); // 使用済みに記録
+            winner.usedSpecial.push(key);
           }
         }
       }
 
-      // ゲーム終了判定
-      if (p1.killCount >= 6 || p2.killCount >= 6) {
-        gs.phase = 'gameover';
-      }
+      if (p1.killCount >= 6 || p2.killCount >= 6) gs.phase = 'gameover';
 
-      // 状態をクライアントに反映するための遅延
       setTimeout(() => {
         if (gs.phase !== 'ability' && gs.phase !== 'gameover') {
           gs.turn++; 
@@ -188,7 +174,7 @@ io.on('connection', (socket) => {
     const ab = data.abilityData;
 
     if (ab && ab.cardId) {
-      const c = String(ab.cardId).toLowerCase();
+      const c = normalize(ab.cardId);
       if (c.includes(KEYS.EMP)) {
         if (ab.type === 'A') opp.bannedCards.push({ card: ab.target, turnsLeft: 3 });
         else opp.forcedNextTurn = true;
@@ -213,7 +199,6 @@ io.on('connection', (socket) => {
       }
     }
     
-    // ターン終了処理
     gs.phase = 'select'; gs.turn++;
     gs.players.p1.ready = false; gs.players.p2.ready = false;
     gs.players.p1.selectedCard = null; gs.players.p2.selectedCard = null;
@@ -240,4 +225,4 @@ function broadcastGameState(room) {
 }
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => console.log(`Stable Server v3.0 Running`));
+server.listen(PORT, '0.0.0.0', () => console.log(`Server running`));
