@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>キングカードゲーム</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<!-- タイトル画面 -->
+<div id="screen-title" class="screen active">
+  <div class="title-bg"></div>
+  <div class="title-content">
+    <h1 class="game-title">
+      <span class="crown">♛</span>
+      <span>キングカードゲーム</span>
+      <span class="crown">♛</span>
+    </h1>
+    <p class="subtitle">9枚のカードで戦略バトル</p>
+    <div class="menu-buttons">
+      <button class="btn btn-primary btn-large" onclick="startAI()">
+        🤖 AI対戦
+      </button>
+      <button class="btn btn-secondary btn-large" onclick="showOnlineMenu()">
+        🌐 オンライン対戦
+      </button>
+      <button class="btn btn-info btn-large" onclick="showRules()">
+        📖 ルール確認
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- オンラインメニュー -->
+<div id="screen-online" class="screen">
+  <div class="screen-header">
+    <button class="btn-back" onclick="showScreen('title')">← 戻る</button>
+    <h2>オンライン対戦</h2>
+  </div>
+  <div class="online-content">
+    <div class="form-group">
+      <label>プレイヤー名</label>
+      <input type="text" id="player-name" placeholder="名前を入力" maxlength="12" value="プレイヤー">
+    </div>
+    <button class="btn btn-primary btn-large" onclick="findMatch()">
+      🔍 対戦相手を探す
+    </button>
+    <div id="waiting-msg" class="waiting-msg hidden">
+      <div class="spinner"></div>
+      <p>対戦相手を待っています...</p>
+      <button class="btn btn-danger" onclick="cancelMatch()">キャンセル</button>
+    </div>
+  </div>
+</div>
+
+<!-- ルール画面 -->
+<div id="screen-rules" class="screen">
+  <div class="screen-header">
+    <button class="btn-back" onclick="showScreen('title')">← 戻る</button>
+    <h2>ゲームルール</h2>
+  </div>
+  <div class="rules-content">
+    <div class="rules-section">
+      <h3>🎯 勝利条件</h3>
+      <p>相手のカード<strong>6枚</strong>を倒す</p>
+    </div>
+    <div class="rules-section">
+      <h3>📋 基本ルール</h3>
+      <ul>
+        <li>各9枚のカードを使って戦う</li>
+        <li>カードは<strong>同時に</strong>出す</li>
+        <li>同じカードは<strong>連続して出せない</strong></li>
+        <li>特殊カードは自分のカードが<strong>2枚死んだら</strong>使える</li>
+        <li>勝ったカードは手札に戻る（引き分けも戻る）</li>
+        <li>特殊能力は<strong>計2回</strong>まで（同じカードは1回のみ）</li>
+        <li>特殊能力は<strong>勝った時のみ</strong>使える</li>
+      </ul>
+    </div>
+    <div class="rules-section">
+      <h3>⚔️ カード相性</h3>
+      <div class="card-table">
+        <div class="card-row header"><span>カード</span><span>勝てる相手</span></div>
+        <div class="card-row"><span class="card-name noble">貴族</span><span>奴隷・将軍 (兵士は相打ち)</span></div>
+        <div class="card-row"><span class="card-name general">将軍</span><span>奴隷・兵士</span></div>
+        <div class="card-row"><span class="card-name soldier">兵士</span><span>奴隷・市民 (貴族は相打ち)</span></div>
+        <div class="card-row"><span class="card-name citizen">市民</span><span>奴隷・貴族・将軍</span></div>
+        <div class="card-row"><span class="card-name slave">奴隷</span><span>特殊カード全て</span></div>
+        <div class="card-row"><span class="card-name special">特殊カード</span><span>奴隷以外の通常カード</span></div>
+      </div>
+    </div>
+    <div class="rules-section">
+      <h3>✨ 特殊カード相性</h3>
+      <div class="card-table">
+        <div class="card-row"><span class="card-name emperor">皇帝</span><span>始皇帝に勝つ</span></div>
+        <div class="card-row"><span class="card-name first-emperor">始皇帝</span><span>狙撃手・革命家に勝つ</span></div>
+        <div class="card-row"><span class="card-name sniper">狙撃手</span><span>皇帝に勝つ（革命家は引分）</span></div>
+        <div class="card-row"><span class="card-name revolutionary">革命家</span><span>皇帝に勝つ（狙撃手は引分）</span></div>
+      </div>
+    </div>
+    <div class="rules-section">
+      <h3>💫 特殊能力</h3>
+      <div class="ability-desc">
+        <div class="ability-item">
+          <strong>皇帝 - 勅命</strong>
+          <p>A: 相手の手札1枚を3ターン禁止<br>B: 相手は次ターン兵士か奴隷のみ</p>
+        </div>
+        <div class="ability-item">
+          <strong>始皇帝 - 万里の長城</strong>
+          <p>3ターン間、自分は負けない（負けは引分に、相打ちは自分生存）</p>
+        </div>
+        <div class="ability-item">
+          <strong>狙撃手 - 暗殺</strong>
+          <p>相手の手札1枚を殺す（奴隷不可）。暗殺分は勝利条件に含まれない</p>
+        </div>
+        <div class="ability-item">
+          <strong>革命家 - 革命</strong>
+          <p>自分の死んだカード2枚を復活（自分のカードが3枚死亡時のみ使用可）。復活分は勝利条件から除外</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ゲーム画面 -->
+<div id="screen-game" class="screen">
+  <!-- 対戦情報バー -->
+  <div class="game-header">
+    <div class="player-info opponent-info">
+      <span id="opp-name">相手</span>
+      <div class="dead-count">💀 <span id="opp-kills">0</span>/6</div>
+      <div id="opp-gw-badge" class="badge badge-wall hidden">万里の長城</div>
+    </div>
+    <div class="turn-info">
+      <div id="turn-num">ターン 1</div>
+      <div id="game-phase-label" class="phase-label">カード選択中</div>
+    </div>
+    <div class="player-info my-info">
+      <span id="my-name">あなた</span>
+      <div class="dead-count">💀 <span id="my-kills">0</span>/6</div>
+      <div id="my-gw-badge" class="badge badge-wall hidden">万里の長城</div>
+    </div>
+  </div>
+
+  <!-- 相手フィールド -->
+  <div class="field opponent-field">
+    <div class="field-label">相手の手札</div>
+    <div id="opponent-hand" class="card-hand opponent-hand"></div>
+    <div class="dead-cards">
+      <span class="dead-label">死亡:</span>
+      <div id="opponent-dead" class="dead-zone"></div>
+    </div>
+  </div>
+
+  <!-- バトルアリーナ -->
+  <div class="battle-arena">
+    <div class="battle-card-area">
+      <div id="arena-opponent" class="arena-card hidden">
+        <div class="card-inner" id="arena-opp-inner"></div>
+      </div>
+      <div class="vs-text">VS</div>
+      <div id="arena-player" class="arena-card hidden">
+        <div class="card-inner" id="arena-player-inner"></div>
+      </div>
+    </div>
+    <div id="battle-result-display" class="battle-result hidden"></div>
+  </div>
+
+  <!-- ログ -->
+  <div id="battle-log" class="battle-log"></div>
+
+  <!-- プレイヤーフィールド -->
+  <div class="field player-field">
+    <div class="dead-cards">
+      <span class="dead-label">死亡:</span>
+      <div id="player-dead" class="dead-zone"></div>
+    </div>
+    <div class="field-label">あなたの手札</div>
+    <div id="player-hand" class="card-hand player-hand"></div>
+  </div>
+
+  <!-- アクションエリア -->
+  <div class="action-area">
+    <div id="action-select" class="action-panel active">
+      <p class="action-hint" id="action-hint">カードを選んでください</p>
+      <div id="selected-card-display" class="selected-display hidden">
+        <span>選択中: </span><span id="selected-card-name"></span>
+        <button class="btn btn-sm btn-danger" onclick="cancelSelect()">取消</button>
+      </div>
+    </div>
+
+    <div id="action-ability" class="action-panel">
+      <div class="ability-panel">
+        <h3 id="ability-title">特殊能力</h3>
+        <div id="ability-options"></div>
+        <button class="btn btn-secondary" onclick="skipAbilityUse()">能力を使わない</button>
+      </div>
+    </div>
+
+    <div id="action-waiting" class="action-panel">
+      <div class="waiting-panel">
+        <div class="spinner-small"></div>
+        <p id="waiting-text">相手の行動を待っています...</p>
+      </div>
+    </div>
+
+    <div id="action-gameover" class="action-panel">
+      <div class="gameover-panel">
+        <h2 id="gameover-text"></h2>
+        <button class="btn btn-primary" onclick="returnToTitle()">タイトルに戻る</button>
+        <button class="btn btn-secondary" onclick="restartGame()">もう一度</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- モーダル: 勅命選択 -->
+<div id="modal-chokurei" class="modal hidden">
+  <div class="modal-content">
+    <h3>勅命の効果を選択</h3>
+    <button class="btn btn-primary modal-btn" onclick="useChokureiA()">
+      A: 相手の手札1枚を3ターン禁止
+    </button>
+    <button class="btn btn-secondary modal-btn" onclick="useChokureiB()">
+      B: 相手は次ターン兵士か奴隷のみ
+    </button>
+  </div>
+</div>
+
+<!-- モーダル: カード選択(汎用) -->
+<div id="modal-card-select" class="modal hidden">
+  <div class="modal-content">
+    <h3 id="modal-card-title">カードを選択</h3>
+    <div id="modal-card-list" class="modal-card-list"></div>
+    <button class="btn btn-secondary" onclick="closeModal('modal-card-select')">キャンセル</button>
+  </div>
+</div>
+
+<!-- モーダル: 革命カード選択 -->
+<div id="modal-revolution" class="modal hidden">
+  <div class="modal-content">
+    <h3>復活させるカードを2枚選択</h3>
+    <p class="modal-hint">選択済み: <span id="rev-selected-count">0</span>/2</p>
+    <div id="modal-revolution-list" class="modal-card-list"></div>
+    <button class="btn btn-primary" id="rev-confirm-btn" onclick="confirmRevolution()" disabled>決定</button>
+    <button class="btn btn-secondary" onclick="closeModal('modal-revolution')">キャンセル</button>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
