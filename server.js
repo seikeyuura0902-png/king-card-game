@@ -13,27 +13,36 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 const rooms = {};
 const waitingPlayers = [];
 
-// バトル相性：カード名はそのまま（下手に加工しない）
-function resolveBattle(c1, c2) {
-  if (c1 === c2) return 'draw';
-  const SPECIAL = ['emperor', 'first_emperor', 'sniper', 'revolutionary'];
-  
-  if ((c1 === 'noble' && c2 === 'soldier') || (c1 === 'soldier' && c2 === 'noble')) return 'mutual';
-  if (c1 === 'slave' && SPECIAL.includes(c2)) return 'p1';
-  if (c2 === 'slave' && SPECIAL.includes(c1)) return 'p2';
-  
-  if (SPECIAL.includes(c1) && SPECIAL.includes(c2)) {
-    const wins = { emperor:['first_emperor'], first_emperor:['sniper','revolutionary'], sniper:['emperor'], revolutionary:['emperor'] };
-    if (wins[c1] && wins[c1].includes(c2)) return 'p1';
-    if (wins[c2] && wins[c2].includes(c1)) return 'p2';
-    return 'draw';
-  }
-  if (SPECIAL.includes(c1)) return 'p1';
-  if (SPECIAL.includes(c2)) return 'p2';
+// 特殊カードのキーワード（送られてきた文字にこれらが含まれていれば能力発動）
+const SPEC_KEYS = ['emperor', 'first', 'sniper', 'revolut', '皇帝', '始皇帝', '狙撃', '革命'];
 
-  const score = { noble:4, general:3, soldier:2, citizen:1, slave:0 };
-  if ((score[c1]||0) > (score[c2]||0)) return 'p1';
-  if ((score[c2]||0) > (score[c1]||0)) return 'p2';
+function resolveBattle(c1, c2) {
+  const s1 = String(c1).toLowerCase();
+  const s2 = String(c2).toLowerCase();
+  if (s1 === s2) return 'draw';
+
+  const isS = (c) => SPEC_KEYS.some(k => c.includes(k));
+
+  // 奴隷のジャイアントキリング
+  if ((s1.includes('slave') || s1.includes('奴隷')) && isS(s2)) return 'p1';
+  if ((s2.includes('slave') || s2.includes('奴隷')) && isS(s1)) return 'p2';
+
+  // 特殊カード同士
+  if (isS(s1) && isS(s2)) return 'draw';
+  // 特殊カード vs 通常カード
+  if (isS(s1)) return 'p1';
+  if (isS(s2)) return 'p2';
+
+  // 通常カードの強さ
+  const getP = (s) => {
+    if (s.includes('noble') || s.includes('貴族')) return 4;
+    if (s.includes('general') || s.includes('将軍')) return 3;
+    if (s.includes('soldier') || s.includes('兵士')) return 2;
+    if (s.includes('citizen') || s.includes('市民')) return 1;
+    return 0;
+  };
+  if (getP(s1) > getP(s2)) return 'p1';
+  if (getP(s2) > getP(s1)) return 'p2';
   return 'draw';
 }
 
@@ -57,7 +66,6 @@ io.on('connection', (socket) => {
       io.sockets.sockets.get(opp.socketId)?.join(roomId);
       socket.emit('matched', { roomId, playerId: 'p2', opponentName: opp.name });
       io.to(opp.socketId).emit('matched', { roomId, playerId: 'p1', opponentName: name });
-      broadcastGameState(rooms[roomId]);
     } else {
       waitingPlayers.push({ socketId: socket.id, name: name });
       socket.emit('waiting');
@@ -89,13 +97,18 @@ io.on('connection', (socket) => {
         p2.hand = p2.hand.filter(c => c !== p2.selectedCard); p2.dead.push(p2.selectedCard);
       }
 
-      // 特殊能力チェック
-      const SPECIALS = ['emperor', 'first_emperor', 'sniper', 'revolutionary'];
-      if (winId && SPECIALS.includes(gs.players[winId].selectedCard)) {
-        const card = gs.players[winId].selectedCard;
-        if (!gs.players[winId].usedSpecial.includes(card)) {
+      // 【重要】特殊能力判定：文字列が含まれているかチェック
+      if (winId) {
+        const cardName = String(gs.players[winId].selectedCard).toLowerCase();
+        const isSpec = SPEC_KEYS.some(k => cardName.includes(k));
+        
+        // 1回制限：usedSpecialにそのキーワードが含まれていないか
+        const alreadyUsed = gs.players[winId].usedSpecial.some(k => cardName.includes(k));
+
+        if (isSpec && !alreadyUsed) {
           gs.phase = 'ability';
-          gs.pendingAbility = [{ playerId: winId, cardId: card }];
+          gs.pendingAbility = [{ playerId: winId, cardId: gs.players[winId].selectedCard }];
+          gs.players[winId].usedSpecial.push(cardName); // ここで即座に使用済みリストへ
         }
       }
 
@@ -118,18 +131,17 @@ io.on('connection', (socket) => {
     const opp = gs.players[data.playerId === 'p1' ? 'p2' : 'p1'];
     const ab = data.abilityData;
 
-    if (ab && ab.cardId && !me.usedSpecial.includes(ab.cardId)) {
-      me.usedSpecial.push(ab.cardId);
-
-      if (ab.cardId === 'emperor') {
+    if (ab && ab.cardId) {
+      const c = String(ab.cardId).toLowerCase();
+      if (c.includes('emp') || c.includes('皇帝')) {
         if (ab.type === 'A') opp.bannedCards.push({ card: ab.target, turnsLeft: 3 });
         else opp.forcedNextTurn = true;
-      } else if (ab.cardId === 'sniper') {
+      } else if (c.includes('snip') || c.includes('狙撃')) {
         opp.hand = opp.hand.filter(h => h !== ab.target);
         opp.assassinated.push(ab.target);
-      } else if (ab.cardId === 'first_emperor') {
+      } else if (c.includes('first') || c.includes('始皇帝')) {
         me.greatWallActive = true;
-      } else if (ab.cardId === 'revolutionary') {
+      } else if (c.includes('revol') || c.includes('革命')) {
         const ts = Array.isArray(ab.targets) ? ab.targets : [ab.target];
         ts.forEach(t => {
           let i = me.dead.indexOf(t);
@@ -164,4 +176,4 @@ function broadcastGameState(room) {
 }
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => console.log(`Server is running`));
+server.listen(PORT, '0.0.0.0', () => console.log(`Run`));
