@@ -13,7 +13,7 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 const rooms = {};
 const waitingPlayers = [];
 
-// バトル相性
+// バトル判定
 function resolveBattle(c1, c2) {
   if (c1 === c2) return 'draw';
   const SPECIAL = ['emperor','first_emperor','sniper','revolutionary'];
@@ -44,6 +44,26 @@ function createGameState(p1Name, p2Name) {
     greatWallActive: false, greatWallTurns: 0, killCount: 0, ready: false, selectedCard: null
   });
   return { players: { p1: createPlayer(p1Name), p2: createPlayer(p2Name) }, turn: 0, phase: 'select', log: [], pendingAbility: [] };
+}
+
+// ターン終了時の状態更新（禁止カードのカウントダウンなど）
+function updatePlayerStateAtTurnEnd(p) {
+  // 1. 勅命A: 禁止カードのターンを減らす
+  if (p.bannedCards && p.bannedCards.length > 0) {
+    p.bannedCards = p.bannedCards
+      .map(b => ({ ...b, turnsLeft: b.turnsLeft - 1 }))
+      .filter(b => b.turnsLeft > 0);
+  }
+  // 2. 勅命B: 次ターン制限を解除（カードを出した後にリセット）
+  p.forcedNextTurn = false;
+
+  // 3. 万里の長城のカウントダウン
+  if (p.greatWallActive) {
+    p.greatWallTurns--;
+    if (p.greatWallTurns <= 0) {
+      p.greatWallActive = false;
+    }
+  }
 }
 
 io.on('connection', (socket) => {
@@ -79,6 +99,11 @@ io.on('connection', (socket) => {
     if (gs.players.p1.ready && gs.players.p2.ready) {
       const p1 = gs.players.p1;
       const p2 = gs.players.p2;
+      
+      // ターン終了時の更新（禁止期間マイナスなど）
+      updatePlayerStateAtTurnEnd(p1);
+      updatePlayerStateAtTurnEnd(p2);
+
       const res = resolveBattle(p1.selectedCard, p2.selectedCard);
       gs.log = [`ターン${gs.turn + 1}: P1「${p1.selectedCard}」 vs P2「${p2.selectedCard}」`];
 
@@ -133,7 +158,6 @@ io.on('connection', (socket) => {
     broadcastGameState(room);
   });
 
-  // 【新設】特殊能力の発動
   socket.on('useAbility', (data) => {
     const { roomId, playerId, abilityData } = data;
     const room = rooms[roomId]; if (!room) return;
@@ -141,24 +165,18 @@ io.on('connection', (socket) => {
     const me = gs.players[playerId];
     const opp = gs.players[playerId === 'p1' ? 'p2' : 'p1'];
 
-    gs.log = [`⚡ ${me.name}が「${abilityData.cardId}」の能力を発動！`];
-
     if (abilityData.cardId === 'emperor') {
       if (abilityData.type === 'A') {
         opp.bannedCards.push({ card: abilityData.target, turnsLeft: 3 });
-        gs.log.push(`${opp.name}の「${abilityData.target}」を3ターン禁止した！`);
       } else {
         opp.forcedNextTurn = true;
-        gs.log.push(`${opp.name}の次ターンを「兵士/奴隷」に制限した！`);
       }
     } else if (abilityData.cardId === 'first_emperor') {
       me.greatWallActive = true;
       me.greatWallTurns = 3;
-      gs.log.push("万里の長城が発動！3ターンの間、敗北しない。");
     } else if (abilityData.cardId === 'sniper') {
       opp.hand = opp.hand.filter(c => c !== abilityData.target);
       opp.assassinated.push(abilityData.target);
-      gs.log.push(`${opp.name}の「${abilityData.target}」を暗殺した！`);
     } else if (abilityData.cardId === 'revolutionary') {
       abilityData.targets.forEach(t => {
         let idx = me.dead.indexOf(t);
@@ -172,10 +190,8 @@ io.on('connection', (socket) => {
         me.hand.push(t);
         me.revived.push(t);
       });
-      gs.log.push(`${me.name}はカードを2枚復活させた！`);
     }
 
-    // フェーズ終了処理
     gs.phase = 'select';
     gs.pendingAbility = [];
     gs.players.p1.ready = false; gs.players.p2.ready = false;
@@ -219,4 +235,3 @@ function broadcastGameState(room) {
 }
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
