@@ -11,7 +11,6 @@ const io = new Server(server, {
   pingTimeout: 5000
 });
 
-// 静的ファイルの設定（index.html がルートにある場合）
 app.use(express.static(__dirname));
 
 app.get('/', (req, res) => {
@@ -26,49 +25,13 @@ function createGameState() {
   const allCards = ['noble','general','soldier','citizen','slave','emperor','first_emperor','sniper','revolutionary'];
   return {
     players: {
-      p1: {
-        hand: [...allCards],
-        dead: [],
-        assassinated: [],
-        revived: [],
-        lastCard: null,
-        specialUnlocked: false,
-        bannedCards: [],
-        forcedNextTurn: false,
-        greatWallActive: false,
-        greatWallTurns: 0,
-        abilityUsed: {},
-        totalAbilityUses: 0,
-        selectedCard: null,
-        ready: false,
-        killCount: 0,
-        reviveCount: 0
-      },
-      p2: {
-        hand: [...allCards],
-        dead: [],
-        assassinated: [],
-        revived: [],
-        lastCard: null,
-        specialUnlocked: false,
-        bannedCards: [],
-        forcedNextTurn: false,
-        greatWallActive: false,
-        greatWallTurns: 0,
-        abilityUsed: {},
-        totalAbilityUses: 0,
-        selectedCard: null,
-        ready: false,
-        killCount: 0,
-        reviveCount: 0
-      }
+      p1: { hand: [...allCards], dead: [], assassinated: [], revived: [], lastCard: null, specialUnlocked: false, bannedCards: [], forcedNextTurn: false, greatWallActive: false, greatWallTurns: 0, abilityUsed: {}, totalAbilityUses: 0, selectedCard: null, ready: false, killCount: 0 },
+      p2: { hand: [...allCards], dead: [], assassinated: [], revived: [], lastCard: null, specialUnlocked: false, bannedCards: [], forcedNextTurn: false, greatWallActive: false, greatWallTurns: 0, abilityUsed: {}, totalAbilityUses: 0, selectedCard: null, ready: false, killCount: 0 }
     },
     turn: 0,
     phase: 'select',
     winner: null,
-    log: [],
-    pendingAbility: null,
-    pendingAbilityIndex: 0
+    log: []
   };
 }
 
@@ -81,45 +44,21 @@ function resolveBattle(c1, c2) {
   if (c1 === 'slave' && s2) return 'p1';
   if (c2 === 'slave' && s1) return 'p2';
   if (s1 && s2) {
-    const wins = {
-      emperor: ['first_emperor'],
-      first_emperor: ['sniper','revolutionary'],
-      sniper: ['emperor'],
-      revolutionary: ['emperor']
-    };
+    const wins = { emperor: ['first_emperor'], first_emperor: ['sniper','revolutionary'], sniper: ['emperor'], revolutionary: ['emperor'] };
     if (wins[c1] && wins[c1].includes(c2)) return 'p1';
     if (wins[c2] && wins[c2].includes(c1)) return 'p2';
     return 'draw';
   }
   if (s1 && !s2 && c2 !== 'slave') return 'p1';
   if (s2 && !s1 && c1 !== 'slave') return 'p2';
-  const normalWins = {
-    noble:   ['slave','general'],
-    general: ['slave','soldier'],
-    soldier: ['slave','citizen'],
-    citizen: ['slave','noble','general'],
-    slave:   []
-  };
+  const normalWins = { noble:['slave','general'], general:['slave','soldier'], soldier:['slave','citizen'], citizen:['slave','noble','general'], slave:[] };
   if (normalWins[c1] && normalWins[c1].includes(c2)) return 'p1';
   if (normalWins[c2] && normalWins[c2].includes(c1)) return 'p2';
   return 'draw';
 }
 
-function applyGreatWall(result, gw1, gw2) {
-  if (!gw1 && !gw2) return result;
-  let r = result;
-  if (gw1 && r === 'p2') r = 'draw';
-  if (gw2 && r === 'p1') r = 'draw';
-  if (gw1 && r === 'mutual') r = 'p1';
-  if (gw2 && r === 'mutual') r = 'p2';
-  return r;
-}
-
 function getCardNameServer(cardId) {
-  const names = {
-    noble:'貴族',general:'将軍',soldier:'兵士',citizen:'市民',slave:'奴隷',
-    emperor:'皇帝',first_emperor:'始皇帝',sniper:'狙撃手',revolutionary:'革命家'
-  };
+  const names = { noble:'貴族',general:'将軍',soldier:'兵士',citizen:'市民',slave:'奴隷', emperor:'皇帝',first_emperor:'始皇帝',sniper:'狙撃手',revolutionary:'革命家' };
   return names[cardId] || cardId;
 }
 
@@ -129,20 +68,11 @@ function processTurn(room) {
   const p2 = gs.players.p2;
   const c1 = p1.selectedCard;
   const c2 = p2.selectedCard;
+  
   gs.log = [];
   gs.log.push(`ターン${gs.turn+1}: P1「${getCardNameServer(c1)}」 vs P2「${getCardNameServer(c2)}」`);
-  let result = applyGreatWall(resolveBattle(c1, c2), p1.greatWallActive, p2.greatWallActive);
   
-  if (p1.greatWallActive) { p1.greatWallTurns--; if (p1.greatWallTurns <= 0) p1.greatWallActive = false; }
-  if (p2.greatWallActive) { p2.greatWallTurns--; if (p2.greatWallTurns <= 0) p2.greatWallActive = false; }
-
-  let p1CardDies = false, p2CardDies = false;
-  let p1Wins = false, p2Wins = false;
-
-  if (result === 'p1') { p2CardDies = true; p1Wins = true; gs.log.push(`P1の勝利！ P2の${getCardNameServer(c2)}が死亡`); }
-  else if (result === 'p2') { p1CardDies = true; p2Wins = true; gs.log.push(`P2の勝利！ P1の${getCardNameServer(c1)}が死亡`); }
-  else if (result === 'mutual') { p1CardDies = true; p2CardDies = true; gs.log.push(`相打ち！`); }
-  else { gs.log.push('引き分け！'); }
+  let result = resolveBattle(c1, c2);
 
   const killCard = (player, card) => {
     player.hand = player.hand.filter(c => c !== card);
@@ -150,20 +80,14 @@ function processTurn(room) {
     player.killCount++;
   };
 
-  if (p1CardDies) killCard(p1, c1);
-  if (p2CardDies) killCard(p2, c2);
+  if (result === 'p1') { killCard(p2, c2); gs.log.push(`P1の勝利！`); }
+  else if (result === 'p2') { killCard(p1, c1); gs.log.push(`P2の勝利！`); }
+  else if (result === 'mutual') { killCard(p1, c1); killCard(p2, c2); gs.log.push(`相打ち！`); }
+  else { gs.log.push('引き分け！'); }
 
-  p1.specialUnlocked = (p1.dead.length + p1.assassinated.length) >= 2;
-  p2.specialUnlocked = (p2.dead.length + p2.assassinated.length) >= 2;
-  p1.lastCard = c1; p2.lastCard = c2;
   p1.selectedCard = null; p2.selectedCard = null;
   p1.ready = false; p2.ready = false;
-
-  if (p1.killCount >= 6) { gs.winner = 'p1'; gs.phase = 'gameover'; return; }
-  if (p2.killCount >= 6) { gs.winner = 'p2'; gs.phase = 'gameover'; return; }
-  
   gs.turn++;
-  gs.phase = 'select';
 }
 
 io.on('connection', (socket) => {
@@ -173,8 +97,11 @@ io.on('connection', (socket) => {
       const opponent = waitingPlayers.shift();
       const roomId = `room_${Date.now()}`;
       rooms[roomId] = { id: roomId, sockets: { p1: opponent.socketId, p2: socket.id }, gameState: createGameState() };
+      
       socket.join(roomId);
-      io.sockets.sockets.get(opponent.socketId)?.join(roomId);
+      const oppSocket = io.sockets.sockets.get(opponent.socketId);
+      if (oppSocket) oppSocket.join(roomId);
+
       socket.emit('matched', { roomId, playerId: 'p2', opponentName: opponent.name });
       io.to(opponent.socketId).emit('matched', { roomId, playerId: 'p1', opponentName: playerName });
       broadcastGameState(rooms[roomId]);
@@ -188,17 +115,40 @@ io.on('connection', (socket) => {
     const { roomId, playerId, cardId } = data;
     const room = rooms[roomId]; if (!room) return;
     const gs = room.gameState;
-    const player = gs.players[playerId];
-    player.selectedCard = cardId;
-    player.ready = true;
+    gs.players[playerId].selectedCard = cardId;
+    gs.players[playerId].ready = true;
+    
     if (gs.players.p1.ready && gs.players.p2.ready) { processTurn(room); }
     broadcastGameState(room);
   });
 });
 
+// 【重要】各プレイヤーの視点に合わせてデータを加工して送る
 function broadcastGameState(room) {
   const gs = room.gameState;
-  io.to(room.id).emit('gameState', gs);
+  const p1SocketId = room.sockets.p1;
+  const p2SocketId = room.sockets.p2;
+
+  const createDataFor = (myId, oppId) => ({
+    myId: myId,
+    turn: gs.turn,
+    phase: gs.phase,
+    me: { 
+        hand: gs.players[myId].hand, 
+        ready: gs.players[myId].ready, 
+        selectedCard: gs.players[myId].selectedCard,
+        killCount: gs.players[oppId].killCount // 自分が倒した数
+    },
+    opponent: { 
+        handCount: gs.players[oppId].hand.length, 
+        ready: gs.players[oppId].ready,
+        killCount: gs.players[myId].killCount // 相手が倒した数
+    },
+    log: gs.log
+  });
+
+  io.to(p1SocketId).emit('gameState', createDataFor('p1', 'p2'));
+  io.to(p2SocketId).emit('gameState', createDataFor('p2', 'p1'));
 }
 
 const PORT = process.env.PORT || 3000;
