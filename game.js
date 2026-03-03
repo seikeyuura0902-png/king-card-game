@@ -20,7 +20,7 @@ let socket = null;
 let myPlayerId = 'p1';
 let roomId = null;
 let localState = null;
-let selectedCard = null; // 現在選んでいる（まだ確定していない）カード
+let selectedCard = null;
 
 const cn = id => CARDS[id] ? CARDS[id].name : id;
 const ce = id => CARDS[id] ? CARDS[id].emoji : '❓';
@@ -51,13 +51,20 @@ function initSocket() {
   });
 
   socket.on('gameState', (state) => {
+    // サーバーからデータが届いたら localState を完全に更新
     localState = state;
-    // サーバーからの確定状態に合わせてUIを更新
-    if (localState.me.ready) {
+    if (localState.me && localState.me.ready) {
       selectedCard = localState.me.selectedCard;
       document.getElementById('selected-card-display').classList.add('hidden');
+    } else {
+      selectedCard = null;
     }
     renderGame();
+    if (state.log) {
+      const logBox = document.getElementById('battle-log');
+      logBox.innerHTML = '';
+      state.log.forEach(msg => addLog(msg));
+    }
   });
 }
 
@@ -68,13 +75,10 @@ function findMatch() {
   document.getElementById('waiting-msg').classList.remove('hidden');
 }
 
-// --- カード選択ロジック ---
+// --- カード選択 ---
 function selectCard(cardId) {
   if (!localState || localState.phase !== 'select' || (localState.me && localState.me.ready)) return;
-  
   selectedCard = cardId;
-  
-  // 選択中表示を出す
   const disp = document.getElementById('selected-card-display');
   const nameEl = document.getElementById('selected-card-name');
   if (disp && nameEl) {
@@ -90,57 +94,72 @@ function cancelSelect() {
   renderGame();
 }
 
-// ★決定ボタンが押された時の処理
 function confirmSelection() {
   if (!selectedCard || !localState) return;
-
   if (gameMode === 'online') {
     socket.emit('selectCard', { roomId, playerId: myPlayerId, cardId: selectedCard });
   } else {
-    // AI対戦の仮処理
+    // AI対戦の確定処理
     localState.me.ready = true;
+    localState.me.selectedCard = selectedCard;
     renderGame();
-    addLog("あなたが " + cn(selectedCard) + " を確定しました。");
+    addLog("あなたが " + cn(selectedCard) + " を出しました。");
+    // AIに選ばせる
+    setTimeout(processAITurn, 1000);
   }
   document.getElementById('selected-card-display').classList.add('hidden');
 }
 
+// --- AIの思考ロジック ---
+function processAITurn() {
+  if (gameMode !== 'ai') return;
+  // ランダムにカードを選ぶ（AIの頭脳）
+  const aiHand = ALL_CARDS_LIST; // 本来は減らすべきですが、まずは出すことを優先
+  const aiCard = aiHand[Math.floor(Math.random() * aiHand.length)];
+  
+  addLog("AIが " + cn(aiCard) + " を出しました。");
+  addLog("判定中...");
+
+  setTimeout(() => {
+    alert("対戦結果の判定ロジックはオンライン側を先に修正中です。\nまずはカードが出せることを確認してください！");
+    // リセットして次へ進める
+    localState.turn++;
+    localState.me.ready = false;
+    selectedCard = null;
+    renderGame();
+  }, 1000);
+}
+
 // --- 描画 ---
 function renderGame() {
-  if (!localState) return;
+  // localStateが空の場合は描画しない（エラー防止）
+  if (!localState || !localState.me) return;
+
   const s = localState;
-
-  // 基本情報
   document.getElementById('turn-num').textContent = 'ターン ' + (s.turn + 1);
-  document.getElementById('my-kills').textContent = (s.me && s.me.killCount) || 0;
-  document.getElementById('opp-kills').textContent = (s.opponent && s.opponent.killCount) || 0;
+  document.getElementById('my-kills').textContent = s.me.killCount || 0;
+  document.getElementById('opp-kills').textContent = s.opponent.killCount || 0;
 
-  // 自分の手札
+  // 手札
   const container = document.getElementById('player-hand');
   container.innerHTML = '';
-  
-  // localState.me.hand が存在するかチェック
-  const myHand = (s.me && s.me.hand) ? s.me.hand : [];
-  
+  const myHand = s.me.hand || [];
   myHand.forEach(cardId => {
     const div = document.createElement('div');
     div.className = 'game-card' + (isSpecial(cardId) ? ' special-card' : '');
     if (selectedCard === cardId) div.classList.add('selected');
-    
-    // 確定済みなら暗くする
-    if (s.me && s.me.ready) div.classList.add('disabled');
-
+    if (s.me.ready) div.classList.add('disabled');
     div.innerHTML = `<div>${ce(cardId)}</div><div style="font-size:10px">${cn(cardId)}</div>`;
     div.onclick = () => selectCard(cardId);
     container.appendChild(div);
   });
 
-  // ★決定ボタンを表示させる
+  // 決定ボタン
   const actionHint = document.getElementById('action-hint');
   if (selectedCard && !s.me.ready) {
     actionHint.innerHTML = `<button class="btn btn-primary btn-large" onclick="confirmSelection()">決定：${cn(selectedCard)}</button>`;
   } else if (s.me.ready) {
-    actionHint.textContent = "相手の選択を待っています...";
+    actionHint.textContent = "対戦相手の選択を待っています...";
   } else {
     actionHint.textContent = "カードを選んでください";
   }
@@ -148,34 +167,32 @@ function renderGame() {
   // 相手の手札
   const oppContainer = document.getElementById('opponent-hand');
   oppContainer.innerHTML = '';
-  const oppCount = (s.opponent && s.opponent.handCount) ? s.opponent.handCount : 0;
+  const oppCount = s.opponent.handCount || 0;
   for (let i = 0; i < oppCount; i++) {
     const div = document.createElement('div');
     div.className = 'card-back';
     div.textContent = '？';
     oppContainer.appendChild(div);
   }
-
+  
   updateActionPanel();
 }
 
 function updateActionPanel() {
-  const s = localState;
   document.querySelectorAll('.action-panel').forEach(p => p.classList.remove('active'));
-  if (s.phase === 'select') {
+  if (localState.phase === 'select') {
     document.getElementById('action-select').classList.add('active');
-  } else if (s.phase === 'gameover') {
-    document.getElementById('action-gameover').classList.add('active');
   }
 }
 
 function addLog(msg) {
   const log = document.getElementById('battle-log');
-  if (!log) return;
-  const p = document.createElement('p');
-  p.textContent = msg;
-  log.appendChild(p);
-  log.scrollTop = log.scrollHeight;
+  if (log) {
+    const p = document.createElement('p');
+    p.textContent = msg;
+    log.appendChild(p);
+    log.scrollTop = log.scrollHeight;
+  }
 }
 
 function startAI() {
