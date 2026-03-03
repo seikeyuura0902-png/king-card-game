@@ -1,147 +1,167 @@
-'use strict';
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const path = require('path');
 
-// サーバーと共通のカード定義
-const CARDS = {
-  noble:          { name: '貴族',    emoji: '👑', type: 'normal' },
-  general:        { name: '将軍',    emoji: '⚔️',  type: 'normal' },
-  soldier:        { name: '兵士',    emoji: '🛡️',  type: 'normal' },
-  citizen:        { name: '市民',    emoji: '🏘️',  type: 'normal' },
-  slave:          { name: '奴隷',    emoji: '⛓️',  type: 'normal' },
-  emperor:        { name: '皇帝',    emoji: '🏯', type: 'special', ability: '勅命' },
-  first_emperor:  { name: '始皇帝', emoji: '🐉', type: 'special', ability: '万里の長城' },
-  sniper:         { name: '狙撃手', emoji: '🎯', type: 'special', ability: '暗殺' },
-  revolutionary:  { name: '革命家', emoji: '🔥', type: 'special', ability: '革命' }
-};
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: '*' },
+  pingInterval: 10000,
+  pingTimeout: 5000
+});
 
-const SPECIAL_CARDS = ['emperor','first_emperor','sniper','revolutionary'];
-let gameMode = null; 
-let socket = null;
-let myPlayerId = 'p1';
-let roomId = null;
-let localState = null;
-let selectedCard = null;
+app.use(express.static(__dirname));
 
-const cn = id => CARDS[id] ? CARDS[id].name : id;
-const ce = id => CARDS[id] ? CARDS[id].emoji : '❓';
-const isSpecial = id => SPECIAL_CARDS.includes(id);
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
 
-function showScreen(name) {
-  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  const el = document.getElementById('screen-' + name);
-  if (el) el.classList.add('active');
+// ルーム管理
+const rooms = {};
+const waitingPlayers = [];
+
+function createGameState() {
+  const allCards = ['noble','general','soldier','citizen','slave','emperor','first_emperor','sniper','revolutionary'];
+  return {
+    players: {
+      p1: { hand: [...allCards], dead: [], killedCount: 0, ready: false, selectedCard: null, specialUnlocked: false },
+      p2: { hand: [...allCards], dead: [], killedCount: 0, ready: false, selectedCard: null, specialUnlocked: false }
+    },
+    turn: 0,
+    phase: 'select',
+    log: []
+  };
 }
 
-function addLog(msg) {
-  const log = document.getElementById('battle-log');
-  if (!log) return;
-  const p = document.createElement('p');
-  p.textContent = msg;
-  log.appendChild(p);
-  log.scrollTop = log.scrollHeight;
-}
-
-// ===================== オンライン接続 =====================
-function initSocket() {
-  if (socket && socket.connected) return;
-  socket = io();
-
-  socket.on('matched', (data) => {
-    roomId = data.roomId;
-    myPlayerId = data.playerId;
-    gameMode = 'online';
-    showScreen('game');
-    addLog('マッチング成立！');
-  });
-
-  socket.on('gameState', (state) => {
-    localState = state;
-    // サーバー側で選択済みなら同期
-    if (state.me.ready) {
-      selectedCard = state.me.selectedCard;
-    }
-    renderGame();
-    if (state.log && state.log.length > 0) {
-      document.getElementById('battle-log').innerHTML = '';
-      state.log.forEach(msg => addLog(msg));
-    }
-  });
-}
-
-function findMatch() {
-  initSocket();
-  const name = document.getElementById('player-name').value.trim() || 'プレイヤー';
-  socket.emit('findMatch', { name });
-}
-
-// ===================== 描画・操作 =====================
-function renderGame() {
-  if (!localState || !localState.me) return;
-  const s = localState;
-
-  document.getElementById('turn-num').textContent = `ターン ${s.turn + 1}`;
-  document.getElementById('my-kills').textContent = s.me.killCount || 0;
-  document.getElementById('opp-kills').textContent = s.opponent.killCount || 0;
-
-  const container = document.getElementById('player-hand');
-  container.innerHTML = '';
-
-  s.me.hand.forEach(cardId => {
-    const div = document.createElement('div');
-    div.className = 'game-card' + (isSpecial(cardId) ? ' special-card' : '');
-    
-    // 特殊カードのロック判定 (サーバーからのフラグを優先)
-    let isLocked = isSpecial(cardId) && !s.me.specialUnlocked;
-    
-    if (isLocked) div.classList.add('disabled');
-    if (selectedCard === cardId) div.classList.add('selected');
-    if (s.me.ready) div.classList.add('disabled');
-
-    div.innerHTML = `<div class="card-emoji">${ce(cardId)}</div><div class="card-name-text">${cn(cardId)}</div>`;
-    
-    // クリックイベント
-    if (!s.me.ready && !isLocked) {
-      div.onclick = () => {
-        selectedCard = cardId;
-        const disp = document.getElementById('selected-card-display');
-        if (disp) {
-          document.getElementById('selected-card-name').textContent = ce(cardId) + ' ' + cn(cardId);
-          disp.classList.remove('hidden');
-        }
-        renderGame();
-      };
-    }
-    container.appendChild(div);
-  });
-
-  // 決定ボタン
-  const confirmBtn = document.getElementById('confirm-btn');
-  if (confirmBtn) {
-    confirmBtn.style.display = (selectedCard && !s.me.ready) ? 'block' : 'none';
+function resolveBattle(c1, c2) {
+  if (c1 === c2) return 'draw';
+  const SPECIAL = ['emperor','first_emperor','sniper','revolutionary'];
+  const s1 = SPECIAL.includes(c1);
+  const s2 = SPECIAL.includes(c2);
+  if ((c1 === 'noble' && c2 === 'soldier') || (c1 === 'soldier' && c2 === 'noble')) return 'mutual';
+  if (c1 === 'slave' && s2) return 'p1';
+  if (c2 === 'slave' && s1) return 'p2';
+  if (s1 && s2) {
+    const wins = { emperor: ['first_emperor'], first_emperor: ['sniper','revolutionary'], sniper: ['emperor'], revolutionary: ['emperor'] };
+    if (wins[c1] && wins[c1].includes(c2)) return 'p1';
+    if (wins[c2] && wins[c2].includes(c1)) return 'p2';
+    return 'draw';
   }
-
-  // パネル切り替え
-  const pSelect = document.getElementById('action-select');
-  const pWaiting = document.getElementById('action-waiting');
-  if (s.me.ready) {
-    pSelect?.classList.remove('active');
-    pWaiting?.classList.add('active');
-  } else {
-    pSelect?.classList.add('active');
-    pWaiting?.classList.remove('active');
-  }
+  if (s1 && !s2 && c2 !== 'slave') return 'p1';
+  if (s2 && !s1 && c1 !== 'slave') return 'p2';
+  const normalWins = { noble:['slave','general'], general:['slave','soldier'], soldier:['slave','citizen'], citizen:['slave','noble','general'], slave:[] };
+  if (normalWins[c1] && normalWins[c1].includes(c2)) return 'p1';
+  if (normalWins[c2] && normalWins[c2].includes(c1)) return 'p2';
+  return 'draw';
 }
 
-function confirmCardSelection() {
-  if (!selectedCard || !localState || localState.me.ready) return;
+function getCardNameServer(cardId) {
+  const names = { noble:'貴族',general:'将軍',soldier:'兵士',citizen:'市民',slave:'奴隷', emperor:'皇帝',first_emperor:'始皇帝',sniper:'狙撃手',revolutionary:'革命家' };
+  return names[cardId] || cardId;
+}
+
+function processTurn(room) {
+  const gs = room.gameState;
+  const p1 = gs.players.p1;
+  const p2 = gs.players.p2;
+  const c1 = p1.selectedCard;
+  const c2 = p2.selectedCard;
   
-  if (gameMode === 'online') {
-    socket.emit('selectCard', { roomId, playerId: myPlayerId, cardId: selectedCard });
+  gs.log = [];
+  gs.log.push(`ターン${gs.turn+1}: P1「${getCardNameServer(c1)}」 vs P2「${getCardNameServer(c2)}」`);
+  
+  let result = resolveBattle(c1, c2);
+
+  const handleDeath = (player, card, winner) => {
+    player.hand = player.hand.filter(c => c !== card);
+    player.dead.push(card);
+    winner.killedCount++;
+  };
+
+  if (result === 'p1') {
+    handleDeath(p2, c2, p1);
+    gs.log.push(`P1の勝利！`);
+  } else if (result === 'p2') {
+    handleDeath(p1, c1, p2);
+    gs.log.push(`P2の勝利！`);
+  } else if (result === 'mutual') {
+    handleDeath(p1, c1, p2);
+    handleDeath(p2, c2, p1);
+    gs.log.push(`相打ち！`);
+  } else {
+    gs.log.push('引き分け！');
   }
-  document.getElementById('selected-card-display').classList.add('hidden');
+
+  p1.specialUnlocked = p1.dead.length >= 2;
+  p2.specialUnlocked = p2.dead.length >= 2;
+
+  p1.selectedCard = null; p2.selectedCard = null;
+  p1.ready = false; p2.ready = false;
+  gs.turn++;
 }
 
-function cancelSelect() {
-  selectedCard = null;
-  document.getElementById('selected-card-display').classList.add('hidden');
-  renderGame();
+io.on('connection', (socket) => {
+  socket.on('findMatch', (data) => {
+    const playerName = data?.name || 'プレイヤー';
+    if (waitingPlayers.length > 0) {
+      const opponent = waitingPlayers.shift();
+      const roomId = `room_${Date.now()}`;
+      rooms[roomId] = { id: roomId, sockets: { p1: opponent.socketId, p2: socket.id }, gameState: createGameState() };
+      socket.join(roomId);
+      const oppSocket = io.sockets.sockets.get(opponent.socketId);
+      if (oppSocket) oppSocket.join(roomId);
+      socket.emit('matched', { roomId, playerId: 'p2', opponentName: opponent.name });
+      io.to(opponent.socketId).emit('matched', { roomId, playerId: 'p1', opponentName: playerName });
+      broadcastGameState(rooms[roomId]);
+    } else {
+      waitingPlayers.push({ socketId: socket.id, name: playerName });
+      socket.emit('waiting');
+    }
+  });
+
+  socket.on('selectCard', (data) => {
+    const { roomId, playerId, cardId } = data;
+    const room = rooms[roomId]; if (!room) return;
+    const gs = room.gameState;
+    if (!gs.players[playerId]) return;
+    gs.players[playerId].selectedCard = cardId;
+    gs.players[playerId].ready = true;
+    if (gs.players.p1.ready && gs.players.p2.ready) { processTurn(room); }
+    broadcastGameState(room);
+  });
+});
+
+function broadcastGameState(room) {
+  const gs = room.gameState;
+  const p1SocketId = room.sockets.p1;
+  const p2SocketId = room.sockets.p2;
+
+  const createDataFor = (myId, oppId) => ({
+    myId: myId,
+    turn: gs.turn,
+    me: { 
+        hand: gs.players[myId].hand, 
+        dead: gs.players[myId].dead,
+        ready: gs.players[myId].ready, 
+        selectedCard: gs.players[myId].selectedCard,
+        killCount: gs.players[myId].killedCount,
+        specialUnlocked: gs.players[myId].specialUnlocked
+    },
+    opponent: { 
+        handCount: gs.players[oppId].hand.length, 
+        dead: gs.players[oppId].dead,
+        ready: gs.players[oppId].ready,
+        killCount: gs.players[oppId].killedCount
+    },
+    log: gs.log
+  });
+
+  if (p1SocketId) io.to(p1SocketId).emit('gameState', createDataFor('p1', 'p2'));
+  if (p2SocketId) io.to(p2SocketId).emit('gameState', createDataFor('p2', 'p1'));
 }
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
+});
