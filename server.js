@@ -25,12 +25,11 @@ function createGameState() {
   const allCards = ['noble','general','soldier','citizen','slave','emperor','first_emperor','sniper','revolutionary'];
   return {
     players: {
-      p1: { hand: [...allCards], dead: [], assassinated: [], revived: [], lastCard: null, specialUnlocked: false, bannedCards: [], forcedNextTurn: false, greatWallActive: false, greatWallTurns: 0, abilityUsed: {}, totalAbilityUses: 0, selectedCard: null, ready: false, killCount: 0 },
-      p2: { hand: [...allCards], dead: [], assassinated: [], revived: [], lastCard: null, specialUnlocked: false, bannedCards: [], forcedNextTurn: false, greatWallActive: false, greatWallTurns: 0, abilityUsed: {}, totalAbilityUses: 0, selectedCard: null, ready: false, killCount: 0 }
+      p1: { hand: [...allCards], dead: [], killedCount: 0, ready: false, selectedCard: null, specialUnlocked: false },
+      p2: { hand: [...allCards], dead: [], killedCount: 0, ready: false, selectedCard: null, specialUnlocked: false }
     },
     turn: 0,
     phase: 'select',
-    winner: null,
     log: []
   };
 }
@@ -74,16 +73,29 @@ function processTurn(room) {
   
   let result = resolveBattle(c1, c2);
 
-  const killCard = (player, card) => {
+  const handleDeath = (player, card, winner) => {
     player.hand = player.hand.filter(c => c !== card);
     player.dead.push(card);
-    player.killCount++;
+    winner.killedCount++; // 勝った方の「倒した数」を増やす
   };
 
-  if (result === 'p1') { killCard(p2, c2); gs.log.push(`P1の勝利！`); }
-  else if (result === 'p2') { killCard(p1, c1); gs.log.push(`P2の勝利！`); }
-  else if (result === 'mutual') { killCard(p1, c1); killCard(p2, c2); gs.log.push(`相打ち！`); }
-  else { gs.log.push('引き分け！'); }
+  if (result === 'p1') {
+    handleDeath(p2, c2, p1);
+    gs.log.push(`P1の勝利！`);
+  } else if (result === 'p2') {
+    handleDeath(p1, c1, p2);
+    gs.log.push(`P2の勝利！`);
+  } else if (result === 'mutual') {
+    handleDeath(p1, c1, p2);
+    handleDeath(p2, c2, p1);
+    gs.log.push(`相打ち！`);
+  } else {
+    gs.log.push('引き分け！');
+  }
+
+  // 【重要】特殊カード解禁判定（自分が2枚以上死んだら解禁）
+  p1.specialUnlocked = p1.dead.length >= 2;
+  p2.specialUnlocked = p2.dead.length >= 2;
 
   p1.selectedCard = null; p2.selectedCard = null;
   p1.ready = false; p2.ready = false;
@@ -97,11 +109,9 @@ io.on('connection', (socket) => {
       const opponent = waitingPlayers.shift();
       const roomId = `room_${Date.now()}`;
       rooms[roomId] = { id: roomId, sockets: { p1: opponent.socketId, p2: socket.id }, gameState: createGameState() };
-      
       socket.join(roomId);
       const oppSocket = io.sockets.sockets.get(opponent.socketId);
       if (oppSocket) oppSocket.join(roomId);
-
       socket.emit('matched', { roomId, playerId: 'p2', opponentName: opponent.name });
       io.to(opponent.socketId).emit('matched', { roomId, playerId: 'p1', opponentName: playerName });
       broadcastGameState(rooms[roomId]);
@@ -117,13 +127,11 @@ io.on('connection', (socket) => {
     const gs = room.gameState;
     gs.players[playerId].selectedCard = cardId;
     gs.players[playerId].ready = true;
-    
     if (gs.players.p1.ready && gs.players.p2.ready) { processTurn(room); }
     broadcastGameState(room);
   });
 });
 
-// 【重要】各プレイヤーの視点に合わせてデータを加工して送る
 function broadcastGameState(room) {
   const gs = room.gameState;
   const p1SocketId = room.sockets.p1;
@@ -132,17 +140,19 @@ function broadcastGameState(room) {
   const createDataFor = (myId, oppId) => ({
     myId: myId,
     turn: gs.turn,
-    phase: gs.phase,
     me: { 
         hand: gs.players[myId].hand, 
+        dead: gs.players[myId].dead,
         ready: gs.players[myId].ready, 
         selectedCard: gs.players[myId].selectedCard,
-        killCount: gs.players[oppId].killCount // 自分が倒した数
+        killCount: gs.players[myId].killedCount, // 自分が倒した数
+        specialUnlocked: gs.players[myId].specialUnlocked // 【ここを追加】
     },
     opponent: { 
         handCount: gs.players[oppId].hand.length, 
+        dead: gs.players[oppId].dead,
         ready: gs.players[oppId].ready,
-        killCount: gs.players[myId].killCount // 相手が倒した数
+        killCount: gs.players[oppId].killedCount // 相手が倒した数
     },
     log: gs.log
   });
