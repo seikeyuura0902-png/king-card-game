@@ -70,43 +70,79 @@ io.on('connection', (socket) => {
     const p1 = gs.players.p1; const p2 = gs.players.p2;
     const me = gs.players[data.playerId];
 
-    if (me.ready || me.bannedCards.some(b => b.card === data.cardId)) return;
+    // 二重選択防止と禁止カードチェック
+    if (me.ready) return;
+    if (me.bannedCards && me.bannedCards.some(b => b.card === data.cardId)) {
+        socket.emit('error', { message: 'そのカードは勅命により禁止されています' });
+        return;
+    }
 
     me.selectedCard = data.cardId;
     me.ready = true;
     io.to(room.sockets[data.playerId === 'p1' ? 'p2' : 'p1']).emit('opponentReady');
 
     if (p1.ready && p2.ready) {
+      // ターン進行によるデバフ解除
       [p1, p2].forEach(p => {
-        p.bannedCards = p.bannedCards.map(b => ({ ...b, turnsLeft: b.turnsLeft - 1 })).filter(b => b.turnsLeft > 0);
-        if (p.greatWallActive) { p.greatWallTurns--; if (p.greatWallTurns <= 0) p.greatWallActive = false; }
+        if (p.bannedCards) {
+            p.bannedCards = p.bannedCards.map(b => ({ ...b, turnsLeft: b.turnsLeft - 1 })).filter(b => b.turnsLeft > 0);
+        }
+        if (p.greatWallActive) { 
+            p.greatWallTurns--; 
+            if (p.greatWallTurns <= 0) p.greatWallActive = false; 
+        }
         p.forcedNextTurn = false;
       });
 
       let res = resolveBattle(p1.selectedCard, p2.selectedCard);
+      // 万里の長城
       if (res === 'p2' && p1.greatWallActive) res = 'draw';
       if (res === 'p1' && p2.greatWallActive) res = 'draw';
 
       let winnerId = null;
-      if (res === 'p1') { p2.hand = p2.hand.filter(c => c !== p2.selectedCard); p2.dead.push(p2.selectedCard); p1.killCount++; winnerId = 'p1'; gs.log.push(`${p1.name}の勝利！`); }
-      else if (res === 'p2') { p1.hand = p1.hand.filter(c => c !== p1.selectedCard); p1.dead.push(p1.selectedCard); p2.killCount++; winnerId = 'p2'; gs.log.push(`${p2.name}の勝利！`); }
-      else if (res === 'mutual') { p1.hand = p1.hand.filter(c => c !== p1.selectedCard); p2.hand = p2.hand.filter(c => c !== p2.selectedCard); p1.dead.push(p1.selectedCard); p2.dead.push(p2.selectedCard); gs.log.push("相打ち！"); }
+      if (res === 'p1') { 
+          p2.hand = p2.hand.filter(c => c !== p2.selectedCard); 
+          p2.dead.push(p2.selectedCard); 
+          p1.killCount++; 
+          winnerId = 'p1'; 
+          gs.log.push(`${p1.name}の勝利！`); 
+      }
+      else if (res === 'p2') { 
+          p1.hand = p1.hand.filter(c => c !== p1.selectedCard); 
+          p1.dead.push(p1.selectedCard); 
+          p2.killCount++; 
+          winnerId = 'p2'; 
+          gs.log.push(`${p2.name}の勝利！`); 
+      }
+      else if (res === 'mutual') { 
+          p1.hand = p1.hand.filter(c => c !== p1.selectedCard); 
+          p2.hand = p2.hand.filter(c => c !== p2.selectedCard); 
+          p1.dead.push(p1.selectedCard); 
+          p2.dead.push(p2.selectedCard); 
+          gs.log.push("相打ち！"); 
+      }
       else { gs.log.push("引き分け！"); }
 
+      // 勝利数判定
       if (p1.killCount >= 6 || p2.killCount >= 6) {
         gs.phase = 'gameover';
       } else {
         const winCard = winnerId ? gs.players[winnerId].selectedCard : null;
-        if (winnerId && ['emperor', 'first_emperor', 'sniper', 'revolutionary'].includes(winCard)) {
+        const SPECIALS = ['emperor', 'first_emperor', 'sniper', 'revolutionary'];
+        // 能力がまだ未使用なら発動フェーズへ
+        if (winnerId && SPECIALS.includes(winCard) && !gs.players[winnerId].usedSpecial.includes(winCard)) {
           gs.phase = 'ability';
           gs.pendingAbility = [{ playerId: winnerId, cardId: winCard }];
         }
       }
 
       p1.lastCard = p1.selectedCard; p2.lastCard = p2.selectedCard;
+      
       setTimeout(() => {
         if (gs.phase !== 'ability' && gs.phase !== 'gameover') {
-          gs.turn++; p1.ready = false; p2.ready = false; p1.selectedCard = null; p2.selectedCard = null;
+          gs.turn++; 
+          p1.ready = false; p2.ready = false; 
+          p1.selectedCard = null; p2.selectedCard = null;
         }
         broadcastGameState(room);
       }, 1500);
@@ -120,29 +156,38 @@ io.on('connection', (socket) => {
     const me = gs.players[data.playerId];
     const opp = gs.players[data.playerId === 'p1' ? 'p2' : 'p1'];
 
-    if (me.usedSpecial.includes(data.abilityData.cardId)) return;
-    me.usedSpecial.push(data.abilityData.cardId);
+    const cardId = data.abilityData.cardId;
+    if (!me.usedSpecial.includes(cardId)) {
+        me.usedSpecial.push(cardId);
 
-    if (data.abilityData.cardId === 'emperor') {
-      if (data.abilityData.type === 'A') {
-        opp.bannedCards.push({ card: data.abilityData.target, turnsLeft: 3 });
-      } else {
-        opp.forcedNextTurn = true;
-      }
-    } else if (data.abilityData.cardId === 'sniper') {
-      opp.hand = opp.hand.filter(c => c !== data.abilityData.target);
-      opp.assassinated.push(data.abilityData.target);
-    } else if (data.abilityData.cardId === 'first_emperor') {
-      me.greatWallActive = true;
-      me.greatWallTurns = 3;
-    } else if (data.abilityData.cardId === 'revolutionary') {
-      const targets = Array.isArray(data.abilityData.targets) ? data.abilityData.targets : [data.abilityData.target];
-      targets.forEach(t => {
-        let idx = me.dead.indexOf(t);
-        if (idx !== -1) { me.dead.splice(idx, 1); opp.killCount = Math.max(0, opp.killCount - 1); }
-        else { idx = me.assassinated.indexOf(t); if (idx !== -1) me.assassinated.splice(idx, 1); }
-        me.hand.push(t);
-      });
+        if (cardId === 'emperor') {
+          if (data.abilityData.type === 'A') {
+            opp.bannedCards.push({ card: data.abilityData.target, turnsLeft: 3 });
+            gs.log.push(`${opp.name}の「${data.abilityData.target}」を3ターン禁止した！`);
+          } else {
+            opp.forcedNextTurn = true;
+            gs.log.push(`${opp.name}の次ターンを制限した！`);
+          }
+        } else if (cardId === 'sniper') {
+          if (opp.hand.includes(data.abilityData.target)) {
+            opp.hand = opp.hand.filter(c => c !== data.abilityData.target);
+            opp.assassinated.push(data.abilityData.target);
+            gs.log.push(`${opp.name}の「${data.abilityData.target}」を狙撃した！`);
+          }
+        } else if (cardId === 'first_emperor') {
+          me.greatWallActive = true;
+          me.greatWallTurns = 3;
+          gs.log.push(`${me.name}が万里の長城を築いた！`);
+        } else if (cardId === 'revolutionary') {
+          const targets = Array.isArray(data.abilityData.targets) ? data.abilityData.targets : [data.abilityData.target];
+          targets.forEach(t => {
+            let idx = me.dead.indexOf(t);
+            if (idx !== -1) { me.dead.splice(idx, 1); opp.killCount = Math.max(0, opp.killCount - 1); }
+            else { idx = me.assassinated.indexOf(t); if (idx !== -1) me.assassinated.splice(idx, 1); }
+            me.hand.push(t);
+          });
+          gs.log.push(`${me.name}の革命が成功した！`);
+        }
     }
 
     gs.phase = 'select';
@@ -156,7 +201,8 @@ io.on('connection', (socket) => {
   socket.on('skipAbility', (data) => {
     const room = rooms[data.roomId]; if (!room) return;
     const gs = room.gameState;
-    gs.phase = 'select'; gs.pendingAbility = [];
+    gs.phase = 'select'; 
+    gs.pendingAbility = [];
     gs.players.p1.ready = false; gs.players.p2.ready = false;
     gs.players.p1.selectedCard = null; gs.players.p2.selectedCard = null;
     gs.turn++;
