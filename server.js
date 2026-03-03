@@ -10,7 +10,30 @@ const io = new Server(server, {
   pingInterval: 10000,
   pingTimeout: 5000
 });
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const path = require('path');
 
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: '*' },
+  pingInterval: 10000,
+  pingTimeout: 5000
+});
+
+// ★ここに貼り付けました
+app.use(express.static(__dirname));
+
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'index.html'));
+});
+// ★ここまで
+
+// ルーム管理
+const rooms = {};
+...
 // --- 重要: 静的ファイルの設定 ---
 // public フォルダを静的ファイルのルートとして指定
 app.use(express.static(path.join(__dirname, 'public')));
