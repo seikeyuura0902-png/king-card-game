@@ -37,7 +37,7 @@ function resolveBattle(c1, c2) {
 }
 
 function createGameState(p1Name, p2Name) {
-  const ALL = ['noble','general','soldier','citizen','slave','emperor','first_emperor','sniper','revolutionary'];
+  const ALL = ['noble', 'general', 'soldier', 'citizen', 'slave', 'emperor', 'first_emperor', 'sniper', 'revolutionary'];
   const createPlayer = (name) => ({
     name: name, hand: [...ALL], dead: [], assassinated: [], revived: [],
     lastCard: null, specialUnlocked: false, bannedCards: [], forcedNextTurn: false,
@@ -69,12 +69,7 @@ io.on('connection', (socket) => {
     const room = rooms[roomId]; if (!room || room.gameState.phase !== 'select') return;
     const gs = room.gameState;
     const p = gs.players[playerId];
-
-    // 連続出し制限チェック
-    if (p.lastCard === cardId) {
-       socket.emit('error', '同じカードは連続で出せません');
-       return;
-    }
+    if (p.lastCard === cardId) return;
 
     p.selectedCard = cardId;
     p.ready = true;
@@ -85,7 +80,6 @@ io.on('connection', (socket) => {
       const p1 = gs.players.p1;
       const p2 = gs.players.p2;
       const res = resolveBattle(p1.selectedCard, p2.selectedCard);
-      
       gs.log = [`ターン${gs.turn + 1}: P1「${p1.selectedCard}」 vs P2「${p2.selectedCard}」`];
 
       let winnerId = null;
@@ -107,15 +101,15 @@ io.on('connection', (socket) => {
         p1.dead.push(p1.selectedCard);
         p2.dead.push(p2.selectedCard);
         gs.log.push("相打ち！");
+      } else {
+        gs.log.push("引き分け！");
       }
 
-      // 勝利判定
       if (p1.killCount >= 6 || p2.killCount >= 6) {
         gs.phase = 'gameover';
       } else {
-        // 特殊能力チェック
         const winCard = winnerId ? gs.players[winnerId].selectedCard : null;
-        const SPECIALS = ['emperor','first_emperor','sniper','revolutionary'];
+        const SPECIALS = ['emperor', 'first_emperor', 'sniper', 'revolutionary'];
         if (winnerId && SPECIALS.includes(winCard)) {
           gs.phase = 'ability';
           gs.pendingAbility = [{ playerId: winnerId, cardId: winCard }];
@@ -139,7 +133,57 @@ io.on('connection', (socket) => {
     broadcastGameState(room);
   });
 
-  // 能力スキップ用
+  // 【新設】特殊能力の発動
+  socket.on('useAbility', (data) => {
+    const { roomId, playerId, abilityData } = data;
+    const room = rooms[roomId]; if (!room) return;
+    const gs = room.gameState;
+    const me = gs.players[playerId];
+    const opp = gs.players[playerId === 'p1' ? 'p2' : 'p1'];
+
+    gs.log = [`⚡ ${me.name}が「${abilityData.cardId}」の能力を発動！`];
+
+    if (abilityData.cardId === 'emperor') {
+      if (abilityData.type === 'A') {
+        opp.bannedCards.push({ card: abilityData.target, turnsLeft: 3 });
+        gs.log.push(`${opp.name}の「${abilityData.target}」を3ターン禁止した！`);
+      } else {
+        opp.forcedNextTurn = true;
+        gs.log.push(`${opp.name}の次ターンを「兵士/奴隷」に制限した！`);
+      }
+    } else if (abilityData.cardId === 'first_emperor') {
+      me.greatWallActive = true;
+      me.greatWallTurns = 3;
+      gs.log.push("万里の長城が発動！3ターンの間、敗北しない。");
+    } else if (abilityData.cardId === 'sniper') {
+      opp.hand = opp.hand.filter(c => c !== abilityData.target);
+      opp.assassinated.push(abilityData.target);
+      gs.log.push(`${opp.name}の「${abilityData.target}」を暗殺した！`);
+    } else if (abilityData.cardId === 'revolutionary') {
+      abilityData.targets.forEach(t => {
+        let idx = me.dead.indexOf(t);
+        if (idx !== -1) {
+          me.dead.splice(idx, 1);
+          opp.killCount = Math.max(0, opp.killCount - 1);
+        } else {
+          idx = me.assassinated.indexOf(t);
+          if (idx !== -1) me.assassinated.splice(idx, 1);
+        }
+        me.hand.push(t);
+        me.revived.push(t);
+      });
+      gs.log.push(`${me.name}はカードを2枚復活させた！`);
+    }
+
+    // フェーズ終了処理
+    gs.phase = 'select';
+    gs.pendingAbility = [];
+    gs.players.p1.ready = false; gs.players.p2.ready = false;
+    gs.players.p1.selectedCard = null; gs.players.p2.selectedCard = null;
+    gs.turn++;
+    broadcastGameState(room);
+  });
+
   socket.on('skipAbility', (data) => {
     const room = rooms[data.roomId]; if (!room) return;
     const gs = room.gameState;
