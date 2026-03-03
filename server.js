@@ -46,26 +46,6 @@ function createGameState(p1Name, p2Name) {
   return { players: { p1: createPlayer(p1Name), p2: createPlayer(p2Name) }, turn: 0, phase: 'select', log: [], pendingAbility: [] };
 }
 
-// ターン終了時の状態更新（禁止カードのカウントダウンなど）
-function updatePlayerStateAtTurnEnd(p) {
-  // 1. 勅命A: 禁止カードのターンを減らす
-  if (p.bannedCards && p.bannedCards.length > 0) {
-    p.bannedCards = p.bannedCards
-      .map(b => ({ ...b, turnsLeft: b.turnsLeft - 1 }))
-      .filter(b => b.turnsLeft > 0);
-  }
-  // 2. 勅命B: 次ターン制限を解除（カードを出した後にリセット）
-  p.forcedNextTurn = false;
-
-  // 3. 万里の長城のカウントダウン
-  if (p.greatWallActive) {
-    p.greatWallTurns--;
-    if (p.greatWallTurns <= 0) {
-      p.greatWallActive = false;
-    }
-  }
-}
-
 io.on('connection', (socket) => {
   socket.on('findMatch', (data) => {
     const name = data?.name || 'プレイヤー';
@@ -88,21 +68,30 @@ io.on('connection', (socket) => {
     const { roomId, playerId, cardId } = data;
     const room = rooms[roomId]; if (!room || room.gameState.phase !== 'select') return;
     const gs = room.gameState;
-    const p = gs.players[playerId];
-    if (p.lastCard === cardId) return;
+    const me = gs.players[playerId];
+    const opp = gs.players[playerId === 'p1' ? 'p2' : 'p1'];
 
-    p.selectedCard = cardId;
-    p.ready = true;
-    const oppId = (playerId === 'p1' ? 'p2' : 'p1');
-    io.to(room.sockets[oppId]).emit('opponentReady');
+    if (me.lastCard === cardId) return;
+
+    me.selectedCard = cardId;
+    me.ready = true;
+    io.to(room.sockets[playerId === 'p1' ? 'p2' : 'p1']).emit('opponentReady');
 
     if (gs.players.p1.ready && gs.players.p2.ready) {
       const p1 = gs.players.p1;
       const p2 = gs.players.p2;
-      
-      // ターン終了時の更新（禁止期間マイナスなど）
-      updatePlayerStateAtTurnEnd(p1);
-      updatePlayerStateAtTurnEnd(p2);
+
+      // ターン終了時更新（禁止カードカウントダウンなど）
+      [p1, p2].forEach(p => {
+        if (p.bannedCards) {
+          p.bannedCards = p.bannedCards.map(b => ({ ...b, turnsLeft: b.turnsLeft - 1 })).filter(b => b.turnsLeft > 0);
+        }
+        p.forcedNextTurn = false;
+        if (p.greatWallActive) {
+          p.greatWallTurns--;
+          if (p.greatWallTurns <= 0) p.greatWallActive = false;
+        }
+      });
 
       const res = resolveBattle(p1.selectedCard, p2.selectedCard);
       gs.log = [`ターン${gs.turn + 1}: P1「${p1.selectedCard}」 vs P2「${p2.selectedCard}」`];
@@ -143,8 +132,8 @@ io.on('connection', (socket) => {
 
       p1.lastCard = p1.selectedCard;
       p2.lastCard = p2.selectedCard;
-      p1.specialUnlocked = (p1.dead.length + p1.assassinated.length) >= 2;
-      p2.specialUnlocked = (p2.dead.length + p2.assassinated.length) >= 2;
+      p1.specialUnlocked = (p1.dead.length + (p1.assassinated || []).length) >= 2;
+      p2.specialUnlocked = (p2.dead.length + (p2.assassinated || []).length) >= 2;
 
       setTimeout(() => {
         if (gs.phase !== 'ability') {
@@ -167,6 +156,7 @@ io.on('connection', (socket) => {
 
     if (abilityData.cardId === 'emperor') {
       if (abilityData.type === 'A') {
+        opp.bannedCards = opp.bannedCards || [];
         opp.bannedCards.push({ card: abilityData.target, turnsLeft: 3 });
       } else {
         opp.forcedNextTurn = true;
@@ -176,18 +166,20 @@ io.on('connection', (socket) => {
       me.greatWallTurns = 3;
     } else if (abilityData.cardId === 'sniper') {
       opp.hand = opp.hand.filter(c => c !== abilityData.target);
+      opp.assassinated = opp.assassinated || [];
       opp.assassinated.push(abilityData.target);
     } else if (abilityData.cardId === 'revolutionary') {
-      abilityData.targets.forEach(t => {
+      (abilityData.targets || []).forEach(t => {
         let idx = me.dead.indexOf(t);
         if (idx !== -1) {
           me.dead.splice(idx, 1);
-          opp.killCount = Math.max(0, opp.killCount - 1);
+          opp.killCount = Math.max(0, (opp.killCount || 0) - 1);
         } else {
-          idx = me.assassinated.indexOf(t);
+          idx = (me.assassinated || []).indexOf(t);
           if (idx !== -1) me.assassinated.splice(idx, 1);
         }
         me.hand.push(t);
+        me.revived = me.revived || [];
         me.revived.push(t);
       });
     }
@@ -221,13 +213,13 @@ function broadcastGameState(room) {
       myId: myId, turn: gs.turn, phase: gs.phase,
       me: { ...my },
       opponent: { 
-        name: op.name, handCount: op.hand.length, dead: op.dead, 
-        assassinated: op.assassinated, revived: op.revived, 
-        ready: op.ready, killCount: op.killCount, 
+        name: op.name, handCount: (op.hand || []).length, dead: op.dead || [], 
+        assassinated: op.assassinated || [], revived: op.revived || [], 
+        ready: op.ready, killCount: op.killCount || 0, 
         specialUnlocked: op.specialUnlocked, greatWallActive: op.greatWallActive 
       },
-      log: gs.log,
-      pendingAbility: gs.pendingAbility
+      log: gs.log || [],
+      pendingAbility: gs.pendingAbility || []
     };
   };
   io.to(room.sockets.p1).emit('gameState', send('p1', 'p2'));
@@ -235,3 +227,4 @@ function broadcastGameState(room) {
 }
 
 const PORT = process.env.PORT || 3000;
+server.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
