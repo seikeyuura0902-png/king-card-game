@@ -13,7 +13,7 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 const rooms = {};
 const waitingPlayers = [];
 
-// 内部判定用キーワード（ここに含まれる文字があれば特殊カードとみなす）
+// 判定用キーワード（小文字で定義）
 const KEYS = {
   EMP: 'emperor',
   FIRST: 'first_emperor',
@@ -22,7 +22,7 @@ const KEYS = {
   SLAVE: 'slave'
 };
 
-// バトル判定（表示用のカード名を壊さないよう、比較時のみ小文字化）
+// バトル判定（元の名前を壊さないよう、比較時のみ小文字化）
 function resolveBattle(c1_orig, c2_orig) {
   const s1 = String(c1_orig).toLowerCase();
   const s2 = String(c2_orig).toLowerCase();
@@ -56,12 +56,14 @@ io.on('connection', (socket) => {
     if (waitingPlayers.length > 0) {
       const opp = waitingPlayers.shift();
       const roomId = `room_${Date.now()}`;
+      
+      // 【重要】ここの名前が画像ファイル名と一致している必要があります
       const createP = (n) => ({
         name: n,
-        // 初期手札の名前は HTML/CSS/JS で指定されているものに合わせる
-        hand: ['noble', 'general', 'soldier', 'citizen', 'slave', 'emperor', 'first_emperor', 'sniper', 'revolutionary'],
+        hand: ['Noble', 'General', 'Soldier', 'Citizen', 'Slave', 'Emperor', 'First_Emperor', 'Sniper', 'Revolutionary'],
         dead: [], assassinated: [], usedSpecial: [], killCount: 0, ready: false, selectedCard: null, greatWallActive: false
       });
+      
       rooms[roomId] = {
         id: roomId,
         sockets: { p1: opp.socketId, p2: socket.id },
@@ -82,13 +84,15 @@ io.on('connection', (socket) => {
     const gs = room.gameState; const me = gs.players[data.playerId];
     if (me.ready) return;
 
-    // 重要：data.cardId は画像表示に使うため、そのまま保存する
+    // クライアントから送られてきたカード名を「そのまま」保存（画像表示のため）
     me.selectedCard = data.cardId; 
     me.ready = true;
 
     const p1 = gs.players.p1; const p2 = gs.players.p2;
     if (p1.ready && p2.ready) {
       let res = resolveBattle(p1.selectedCard, p2.selectedCard);
+      
+      // 万里の長城
       if (res === 'p2' && p1.greatWallActive) res = 'draw';
       if (res === 'p1' && p2.greatWallActive) res = 'draw';
 
@@ -101,22 +105,18 @@ io.on('connection', (socket) => {
         p1.dead.push(p1.selectedCard); p2.killCount++; winId = 'p2'; 
       }
 
-      // --- 能力発動条件の判定 ---
+      // 能力判定（勝った時のみ）
       if (winId) {
         const winner = gs.players[winId];
         const sName = String(winner.selectedCard).toLowerCase();
         const key = [KEYS.EMP, KEYS.FIRST, KEYS.SNIP, KEYS.REVO].find(k => sName.includes(k));
 
         if (key && !winner.usedSpecial.includes(key)) {
-          // 墓地の枚数を確認（dead + assassinated）
           const totalDead = (winner.dead ? winner.dead.length : 0) + (winner.assassinated ? winner.assassinated.length : 0);
           let trigger = false;
-
-          if (key === KEYS.REVO) {
-            if (totalDead >= 3) trigger = true; // 革命家は3枚
-          } else {
-            if (totalDead >= 2) trigger = true; // その他は2枚
-          }
+          // 条件：革命家は3枚、他は2枚死んでいたら発動
+          if (key === KEYS.REVO) { if (totalDead >= 3) trigger = true; }
+          else { if (totalDead >= 2) trigger = true; }
 
           if (trigger) {
             gs.phase = 'ability';
@@ -160,9 +160,8 @@ io.on('connection', (socket) => {
         const targets = Array.isArray(ab.targets) ? ab.targets : (ab.target ? [ab.target] : []);
         targets.forEach(t => {
           let idx = me.dead.indexOf(t);
-          if (idx !== -1) { 
-            me.dead.splice(idx, 1); if (opp.killCount > 0) opp.killCount--; 
-          } else {
+          if (idx !== -1) { me.dead.splice(idx, 1); if (opp.killCount > 0) opp.killCount--; }
+          else {
             idx = (me.assassinated || []).indexOf(t);
             if (idx !== -1) me.assassinated.splice(idx, 1);
           }
@@ -192,4 +191,4 @@ function broadcastGameState(room) {
 }
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => console.log(`Fixed: Image & Logic`));
+server.listen(PORT, '0.0.0.0', () => console.log(`Ready`));
