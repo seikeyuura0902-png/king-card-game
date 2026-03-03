@@ -537,9 +537,9 @@ function checkWinner(room) {
   }
 }
 
+// PORTの宣言は1回だけにします
 const PORT = process.env.PORT || 3000;
-// Renderで動かすための修正
-const PORT = process.env.PORT || 3000;
+
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(サーバーがポート ${PORT} で起動しました);
+    console.log(`サーバーがポート ${PORT} で起動しました`);
 });
